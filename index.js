@@ -36,7 +36,7 @@ function startColorDuel(roomCode) {
   room.gameState = {
     scores: {},
     round: 0,
-    maxRounds: MAX_ROUNDS,
+    maxRounds: room.maxRounds || MAX_ROUNDS,
     currentColor: null,
     roundActive: false,
     roundWinner: null,
@@ -80,10 +80,11 @@ const RPS_BEATS = { rock: "scissors", paper: "rock", scissors: "paper" };
 function startRPS(roomCode) {
   const room = rooms[roomCode];
   if (!room) return;
+  const maxRounds = room.maxRounds || MAX_ROUNDS;
   room.gameState = {
     scores: {},
     round: 1,
-    maxRounds: MAX_ROUNDS,
+    maxRounds,
     choices: {},
     roundActive: true,
     submittedCount: 0,
@@ -93,7 +94,7 @@ function startRPS(roomCode) {
   setTimeout(() =>
     io.to(roomCode).emit("rps_round_start", {
       round: 1,
-      maxRounds: MAX_ROUNDS,
+      maxRounds,
       playerCount: room.players.length,
     }), 1200);
 }
@@ -183,13 +184,15 @@ function endGame(roomCode) {
 io.on("connection", (socket) => {
   console.log("🔌 Connected:", socket.id);
 
-  socket.on("create_room", ({ game, playerName }) => {
+  socket.on("create_room", ({ game, playerName, maxRounds }) => {
+    const VALID_ROUNDS = [5, 10, 15, 20];
     const roomCode = generateRoomCode();
     rooms[roomCode] = {
       game,
       players: [socket.id],
       playerNames: { [socket.id]: playerName || "Player 1" },
       hostId: socket.id,
+      maxRounds: VALID_ROUNDS.includes(maxRounds) ? maxRounds : MAX_ROUNDS,
       gameState: null,
     };
     socket.join(roomCode);
@@ -199,8 +202,9 @@ io.on("connection", (socket) => {
       playerId: socket.id,
       playerNames: rooms[roomCode].playerNames,
       hostId: socket.id,
+      maxRounds: rooms[roomCode].maxRounds,
     });
-    console.log(`🏠 Room ${roomCode} created | game: ${game}`);
+    console.log(`🏠 Room ${roomCode} created | game: ${game} | rounds: ${rooms[roomCode].maxRounds}`);
   });
 
   socket.on("join_room", ({ roomCode, playerName }) => {
@@ -235,6 +239,7 @@ io.on("connection", (socket) => {
       playerNames: room.playerNames,
       players: room.players,
       hostId: room.hostId,
+      maxRounds: room.maxRounds,
     });
     console.log(`👥 Player joined room ${roomCode} (${room.players.length}/${MAX_PLAYERS})`);
   });
