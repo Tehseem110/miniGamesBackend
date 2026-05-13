@@ -22,9 +22,9 @@ function generateRoomCode() {
 // ─── COLOR DUEL ────────────────────────────────────────────────────────────
 
 const COLORS = [
-  { name: "red", display: "RED", hex: "#ef4444" },
-  { name: "blue", display: "BLUE", hex: "#3b82f6" },
-  { name: "green", display: "GREEN", hex: "#22c55e" },
+  { name: "red",    display: "RED",    hex: "#ef4444" },
+  { name: "blue",   display: "BLUE",   hex: "#3b82f6" },
+  { name: "green",  display: "GREEN",  hex: "#22c55e" },
   { name: "yellow", display: "YELLOW", hex: "#eab308" },
   { name: "purple", display: "PURPLE", hex: "#a855f7" },
   { name: "orange", display: "ORANGE", hex: "#f97316" },
@@ -73,7 +73,7 @@ function nextColorRound(roomCode) {
   }, delay);
 }
 
-// ─── ROCK PAPER SCISSORS ───────────────────────────────────────────────────
+// ─── ROCK PAPER SCISSORS (N-player all-vs-all) ─────────────────────────────
 
 const RPS_BEATS = { rock: "scissors", paper: "rock", scissors: "paper" };
 
@@ -86,16 +86,76 @@ function startRPS(roomCode) {
     maxRounds: MAX_ROUNDS,
     choices: {},
     roundActive: true,
+    submittedCount: 0,
   };
   room.players.forEach((id) => (room.gameState.scores[id] = 0));
   io.to(roomCode).emit("game_started", { game: "rps" });
-  setTimeout(
-    () =>
-      io
-        .to(roomCode)
-        .emit("rps_round_start", { round: 1, maxRounds: MAX_ROUNDS }),
-    1200,
-  );
+  setTimeout(() =>
+    io.to(roomCode).emit("rps_round_start", {
+      round: 1,
+      maxRounds: MAX_ROUNDS,
+      playerCount: room.players.length,
+    }), 1200);
+}
+
+function resolveRPSRound(roomCode) {
+  const room = rooms[roomCode];
+  if (!room || !room.gameState) return;
+
+  const gs = room.gameState;
+  const players = room.players;
+  const choices = gs.choices;
+
+  // Round points earned this round per player
+  const roundPoints = {};
+  players.forEach((id) => (roundPoints[id] = 0));
+
+  // All-vs-all: compare every unique pair
+  for (let i = 0; i < players.length; i++) {
+    for (let j = i + 1; j < players.length; j++) {
+      const a = players[i];
+      const b = players[j];
+      const ca = choices[a];
+      const cb = choices[b];
+      if (RPS_BEATS[ca] === cb) {
+        roundPoints[a]++;
+        gs.scores[a]++;
+      } else if (RPS_BEATS[cb] === ca) {
+        roundPoints[b]++;
+        gs.scores[b]++;
+      }
+      // tie → no points
+    }
+  }
+
+  gs.roundActive = false;
+
+  io.to(roomCode).emit("rps_round_result", {
+    choices,
+    roundPoints,
+    scores: gs.scores,
+    playerNames: room.playerNames,
+    round: gs.round,
+    playerCount: players.length,
+  });
+
+  gs.choices = {};
+  gs.submittedCount = 0;
+  gs.round++;
+
+  if (gs.round > gs.maxRounds) {
+    setTimeout(() => endGame(roomCode), 2800);
+  } else {
+    setTimeout(() => {
+      if (!rooms[roomCode]) return;
+      gs.roundActive = true;
+      io.to(roomCode).emit("rps_round_start", {
+        round: gs.round,
+        maxRounds: gs.maxRounds,
+        playerCount: players.length,
+      });
+    }, 2800);
+  }
 }
 
 // ─── SHARED END ────────────────────────────────────────────────────────────
@@ -105,13 +165,10 @@ function endGame(roomCode) {
   if (!room) return;
   const scores = room.gameState.scores;
 
-  // Find the highest score
   let maxScore = -1;
   Object.values(scores).forEach((s) => { if (s > maxScore) maxScore = s; });
-
-  // Find all players with the highest score
   const topPlayers = Object.keys(scores).filter((id) => scores[id] === maxScore);
-  const winner = topPlayers.length === 1 ? topPlayers[0] : null; // null = draw
+  const winner = topPlayers.length === 1 ? topPlayers[0] : null;
 
   io.to(roomCode).emit("game_over", {
     scores,
@@ -149,9 +206,7 @@ io.on("connection", (socket) => {
   socket.on("join_room", ({ roomCode, playerName }) => {
     const room = rooms[roomCode];
     if (!room) {
-      socket.emit("room_error", {
-        message: "Room not found! Check your code.",
-      });
+      socket.emit("room_error", { message: "Room not found! Check your code." });
       return;
     }
     if (room.players.length >= MAX_PLAYERS) {
@@ -173,7 +228,6 @@ io.on("connection", (socket) => {
       playerNames: room.playerNames,
       hostId: room.hostId,
     });
-
     console.log(`👥 Player joined room ${roomCode} (${room.players.length}/${MAX_PLAYERS})`);
   });
 
@@ -190,9 +244,8 @@ io.on("connection", (socket) => {
       socket.emit("room_error", { message: "Need at least 2 players to start." });
       return;
     }
-    if (room.gameState) return; // already started
+    if (room.gameState) return;
 
-    // Countdown then start
     let count = 3;
     const countdown = setInterval(() => {
       io.to(roomCode).emit("game_countdown", { count });
@@ -231,10 +284,7 @@ io.on("connection", (socket) => {
       });
       setTimeout(() => nextColorRound(roomCode), 2500);
     } else {
-      room.gameState.scores[socket.id] = Math.max(
-        0,
-        room.gameState.scores[socket.id] - 1,
-      );
+      room.gameState.scores[socket.id] = Math.max(0, room.gameState.scores[socket.id] - 1);
       socket.emit("wrong_color", { scores: room.gameState.scores });
       io.to(roomCode).emit("score_update", {
         scores: room.gameState.scores,
@@ -248,55 +298,31 @@ io.on("connection", (socket) => {
     const roomCode = socket.data.roomCode;
     const room = rooms[roomCode];
     if (!room?.gameState?.roundActive) return;
-    if (room.gameState.choices[socket.id]) return;
+    if (room.gameState.choices[socket.id]) return; // already submitted
 
     room.gameState.choices[socket.id] = choice;
-    socket.to(roomCode).emit("opponent_chose");
+    room.gameState.submittedCount++;
+
+    // Tell everyone how many have submitted (without revealing choices)
+    io.to(roomCode).emit("rps_submission_update", {
+      submittedCount: room.gameState.submittedCount,
+      totalPlayers: room.players.length,
+      submittedIds: Object.keys(room.gameState.choices),
+    });
+
     socket.emit("choice_confirmed", { choice });
 
-    if (Object.keys(room.gameState.choices).length === 2) {
+    // All players submitted → resolve
+    if (room.gameState.submittedCount === room.players.length) {
       room.gameState.roundActive = false;
-      const [p1, p2] = room.players;
-      const p1c = room.gameState.choices[p1];
-      const p2c = room.gameState.choices[p2];
-      let roundWinner = null;
-      if (RPS_BEATS[p1c] === p2c) roundWinner = p1;
-      else if (RPS_BEATS[p2c] === p1c) roundWinner = p2;
-      if (roundWinner) room.gameState.scores[roundWinner]++;
-
-      io.to(roomCode).emit("rps_round_result", {
-        choices: room.gameState.choices,
-        winner: roundWinner,
-        scores: room.gameState.scores,
-        playerNames: room.playerNames,
-        round: room.gameState.round,
-        draw: roundWinner === null,
-      });
-
-      room.gameState.choices = {};
-      room.gameState.round++;
-
-      if (room.gameState.round > room.gameState.maxRounds) {
-        setTimeout(() => endGame(roomCode), 2500);
-      } else {
-        setTimeout(() => {
-          if (!rooms[roomCode]) return;
-          room.gameState.roundActive = true;
-          io.to(roomCode).emit("rps_round_start", {
-            round: room.gameState.round,
-            maxRounds: room.gameState.maxRounds,
-          });
-        }, 2500);
-      }
+      resolveRPSRound(roomCode);
     }
   });
 
   socket.on("disconnect", () => {
     const roomCode = socket.data.roomCode;
     if (roomCode && rooms[roomCode]) {
-      socket
-        .to(roomCode)
-        .emit("player_left", { message: "A player disconnected." });
+      socket.to(roomCode).emit("player_left", { message: "A player disconnected." });
       delete rooms[roomCode];
       console.log(`❌ Room ${roomCode} closed`);
     }
@@ -312,7 +338,6 @@ app.get("/", (req, res) =>
 );
 
 const PORT = 3205;
-// server.js - last line
 server.listen(PORT, "0.0.0.0", () =>
   console.log(`🚀 MiniGames Backend on http://localhost:${PORT}`),
 );
