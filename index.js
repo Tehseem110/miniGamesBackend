@@ -281,6 +281,7 @@ app.get("/", (req, res) =>
 );
 
 const PORT = 3205;
-server.listen(PORT, () =>
+// server.js - last line
+server.listen(PORT, "0.0.0.0", () =>
   console.log(`🚀 MiniGames Backend on http://localhost:${PORT}`),
 );
