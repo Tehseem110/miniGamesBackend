@@ -13,6 +13,7 @@ const io = new Server(server, {
 
 const rooms = {};
 const MAX_ROUNDS = 5;
+const MAX_PLAYERS = 4;
 
 function generateRoomCode() {
   return Math.random().toString(36).substring(2, 7).toUpperCase();
@@ -103,10 +104,15 @@ function endGame(roomCode) {
   const room = rooms[roomCode];
   if (!room) return;
   const scores = room.gameState.scores;
-  const [p1, p2] = room.players;
-  let winner = null;
-  if (scores[p1] > scores[p2]) winner = p1;
-  else if (scores[p2] > scores[p1]) winner = p2;
+
+  // Find the highest score
+  let maxScore = -1;
+  Object.values(scores).forEach((s) => { if (s > maxScore) maxScore = s; });
+
+  // Find all players with the highest score
+  const topPlayers = Object.keys(scores).filter((id) => scores[id] === maxScore);
+  const winner = topPlayers.length === 1 ? topPlayers[0] : null; // null = draw
+
   io.to(roomCode).emit("game_over", {
     scores,
     winner,
@@ -126,6 +132,7 @@ io.on("connection", (socket) => {
       game,
       players: [socket.id],
       playerNames: { [socket.id]: playerName || "Player 1" },
+      hostId: socket.id,
       gameState: null,
     };
     socket.join(roomCode);
@@ -134,6 +141,7 @@ io.on("connection", (socket) => {
       roomCode,
       playerId: socket.id,
       playerNames: rooms[roomCode].playerNames,
+      hostId: socket.id,
     });
     console.log(`🏠 Room ${roomCode} created | game: ${game}`);
   });
@@ -146,19 +154,43 @@ io.on("connection", (socket) => {
       });
       return;
     }
-    if (room.players.length >= 2) {
-      socket.emit("room_error", { message: "Room is full!" });
+    if (room.players.length >= MAX_PLAYERS) {
+      socket.emit("room_error", { message: "Room is full! (max 4 players)" });
+      return;
+    }
+    if (room.gameState) {
+      socket.emit("room_error", { message: "Game already in progress!" });
       return;
     }
 
+    const playerNumber = room.players.length + 1;
     room.players.push(socket.id);
-    room.playerNames[socket.id] = playerName || "Player 2";
+    room.playerNames[socket.id] = playerName || `Player ${playerNumber}`;
     socket.join(roomCode);
     socket.data.roomCode = roomCode;
     io.to(roomCode).emit("player_joined", {
       players: room.players,
       playerNames: room.playerNames,
+      hostId: room.hostId,
     });
+
+    console.log(`👥 Player joined room ${roomCode} (${room.players.length}/${MAX_PLAYERS})`);
+  });
+
+  // ── Host starts the game manually
+  socket.on("start_game", () => {
+    const roomCode = socket.data.roomCode;
+    const room = rooms[roomCode];
+    if (!room) return;
+    if (room.hostId !== socket.id) {
+      socket.emit("room_error", { message: "Only the host can start the game." });
+      return;
+    }
+    if (room.players.length < 2) {
+      socket.emit("room_error", { message: "Need at least 2 players to start." });
+      return;
+    }
+    if (room.gameState) return; // already started
 
     // Countdown then start
     let count = 3;
@@ -171,7 +203,6 @@ io.on("connection", (socket) => {
         else if (room.game === "rps") startRPS(roomCode);
       }
     }, 1000);
-    console.log(`👥 Player joined room ${roomCode}`);
   });
 
   // ── Color Duel: player clicks a color
@@ -265,7 +296,7 @@ io.on("connection", (socket) => {
     if (roomCode && rooms[roomCode]) {
       socket
         .to(roomCode)
-        .emit("player_left", { message: "Your opponent disconnected." });
+        .emit("player_left", { message: "A player disconnected." });
       delete rooms[roomCode];
       console.log(`❌ Room ${roomCode} closed`);
     }
