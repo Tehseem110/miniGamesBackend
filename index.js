@@ -228,6 +228,14 @@ io.on("connection", (socket) => {
       playerNames: room.playerNames,
       hostId: room.hostId,
     });
+    // Tell the joining socket their own identity so the frontend can transition to 'waiting'
+    socket.emit("room_joined", {
+      roomCode,
+      playerId: socket.id,
+      playerNames: room.playerNames,
+      players: room.players,
+      hostId: room.hostId,
+    });
     console.log(`👥 Player joined room ${roomCode} (${room.players.length}/${MAX_PLAYERS})`);
   });
 
